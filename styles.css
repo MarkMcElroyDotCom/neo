@@ -434,7 +434,7 @@ body.focus-mode .sheet ::selection { color: #1c1c1c; }
 body.focus-mode.night .sheet ::selection { color: #d6d2c6; }
 /* the drop cap sits outside the highlight's reach; same selector as the cap
    itself so no other paragraph grows a ::first-letter */
-body.focus-mode:not(.no-dropcap) .chapter-body.focus-cap:not(.cap-off) p:not(.poetry):not(p:not(.poetry) ~ p)::first-letter { color: var(--ink); }
+body.focus-mode:not(.no-dropcap) .chapter:not(.unnumbered) .chapter-body.focus-cap:not(.cap-off) p:not(.poetry):not(p:not(.poetry) ~ p)::first-letter { color: var(--ink); }
 .sheet {
   background: var(--paper); color: var(--ink);
   padding: 70px 72px 90px;
@@ -504,6 +504,7 @@ body.focus-mode:not(.no-dropcap) .chapter-body.focus-cap:not(.cap-off) p:not(.po
 /* pre-wrap keeps spaces literal, so the engine's space-collapsing repair
    pass (the source of duplicated characters on delete) never runs */
 .chapter-body p { text-indent: 2em; margin: 0; white-space: pre-wrap; }
+.chapter.unnumbered .chapter-body p { text-indent: 0; }
 #aux-editor p { white-space: pre-wrap; }
 /* the chapter's opening paragraph: the first one that isn't poetry */
 .chapter-body p:not(.poetry):not(p:not(.poetry) ~ p) { text-indent: 0; }
@@ -518,7 +519,7 @@ body.focus-mode:not(.no-dropcap) .chapter-body.focus-cap:not(.cap-off) p:not(.po
 /* cap-off while the caret is in the first paragraph: the rule must stop
    MATCHING entirely — a matching first-letter rule, even styled to nothing,
    makes the engine split the text internally, which corrupts deletes */
-body:not(.no-dropcap) .chapter-body:not(.cap-off) p:not(.poetry):not(p:not(.poetry) ~ p)::first-letter {
+body:not(.no-dropcap) .chapter:not(.unnumbered) .chapter-body:not(.cap-off) p:not(.poetry):not(p:not(.poetry) ~ p)::first-letter {
   font-size: 3.4em; float: left; line-height: 0.8;
   padding: 4px 8px 0 0; font-family: var(--dropcap-font);
 }
@@ -633,6 +634,13 @@ body.bright .spell-menu button { color: #eee; }
   z-index: 70; overflow-y: auto; padding: 40px 0 20px;
 }
 #nav-pane.open { transform: translateX(0); }
+#nav-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0 16px 14px; font-size: 12px; text-transform: uppercase;
+  letter-spacing: 2px; color: var(--muted);
+}
+#nav-pin { background: none; border: none; color: #555; font-size: 15px; cursor: pointer; }
+#nav-pin.pinned { color: var(--accent); }
 .nav-item {
   padding: 9px 18px 10px; cursor: pointer;
   border-left: 3px solid transparent;
@@ -874,6 +882,9 @@ body.bright .show-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(25
 
 /* pinned notes pane: the page column shifts left to clear the pane */
 #editor-view.side-pinned #paper-scroll { left: calc(50% - 125px); }
+/* pinned chapter pane keeps the manuscript clear of the left edge */
+#editor-view.nav-pinned #paper-scroll { left: calc(50% + 125px); }
+#editor-view.nav-pinned.side-pinned #paper-scroll { left: 50%; }
 
 /* Help → Check for Update…: the download bar */
 .up-bar { height: 6px; background: #2a2a2a; border-radius: 3px; margin-top: 12px; overflow: hidden; }

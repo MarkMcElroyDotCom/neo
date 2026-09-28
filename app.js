@@ -1159,6 +1159,11 @@ function renderChapters() {
     titleSpan.contentEditable = 'true';
     titleSpan.spellcheck = false;
     titleSpan.textContent = book.chapterTitles[chId] || '';
+    titleSpan.addEventListener('focus', () => {
+      currentChapterId = chId;
+      highlightNav();
+      updateCounters();
+    });
     if (titleSpan.textContent) head.classList.add('has-title');
     titleSpan.addEventListener('input', () => {
       head.classList.toggle('has-title', titleSpan.textContent.trim() !== '');
@@ -2608,10 +2613,22 @@ function renderNav() {
   });
 }
 
-$('#nav-add').onclick = () => {
+$('#nav-add').onclick = async () => {
+  if (!book) return;
+  const choice = await optionModal(t('Add after the current page'), null, [
+    { label: t('Numbered chapter'), value: 'chapter' },
+    { label: t('Unnumbered page'), desc: t('For dedications, forewords, and other front or back matter.'), value: 'page' }
+  ]);
+  if (!choice) return;
+  const at = currentChapterId && book.chapterOrder.includes(currentChapterId)
+    ? book.chapterOrder.indexOf(currentChapterId) + 1 : book.chapterOrder.length;
+  snapshotStructure('new page');
   switchTab('manuscript');
-  currentChapterId = book.chapterOrder[book.chapterOrder.length - 1] || null;
-  newChapter();
+  const chId = createChapterAt(at, choice === 'page');
+  if (choice === 'page') {
+    const title = document.querySelector(`.chapter[data-id="${chId}"] .ch-title`);
+    if (title) { title.scrollIntoView({ block: 'center' }); title.focus(); }
+  } else focusChapter(chId);
 };
 
 // drop target for chapter reordering, with a gold line showing the landing spot
@@ -2626,7 +2643,7 @@ function finishChapterDrag(e) {
   // to keep the pane available after an in-pane drop, even before focus returns.
   const pane = $('#nav-pane');
   const r = pane.getBoundingClientRect();
-  if (e.clientX < r.left || e.clientX >= r.right || e.clientY < r.top || e.clientY >= r.bottom) {
+  if (pane.dataset.pinned !== '1' && (e.clientX < r.left || e.clientX >= r.right || e.clientY < r.top || e.clientY >= r.bottom)) {
     pane.classList.remove('open');
   }
   if (navRefreshPending) renderNav();
@@ -2699,8 +2716,8 @@ function scheduleNavRefresh() {
 }
 
 // Hover behavior for both side panes:
-function wireHoverPane(hotzone, pane, isPinnable) {
-  const pinned = () => (isPinnable && pane.dataset.pinned === '1') ||
+function wireHoverPane(hotzone, pane) {
+  const pinned = () => pane.dataset.pinned === '1' ||
     (pane.id === 'nav-pane' && chapterDragActive);
   hotzone.addEventListener('mouseenter', (e) => {
     if (e.buttons) return; // dragging something — stand down
@@ -2716,13 +2733,13 @@ function wireHoverPane(hotzone, pane, isPinnable) {
     pane.classList.remove('open');
   });
 }
-wireHoverPane($('#nav-hotzone'), $('#nav-pane'), false);
-wireHoverPane($('#side-hotzone'), $('#side-pane'), true);
+wireHoverPane($('#nav-hotzone'), $('#nav-pane'));
+wireHoverPane($('#side-hotzone'), $('#side-pane'));
 
 // leaving the window closes unpinned panes (they used to stick open)
 function closeUnpinnedPanes() {
   // Wayland can blur the window as a native chapter drag begins.
-  if (!chapterDragActive) $('#nav-pane').classList.remove('open');
+  if (!chapterDragActive && $('#nav-pane').dataset.pinned !== '1') $('#nav-pane').classList.remove('open');
   if ($('#side-pane').dataset.pinned !== '1') $('#side-pane').classList.remove('open');
 }
 document.documentElement.addEventListener('mouseleave', closeUnpinnedPanes);
@@ -2745,6 +2762,22 @@ $('#side-pin').onclick = () => {
   $('#side-pin').classList.toggle('pinned', !pinned);
   $('#editor-view').classList.toggle('side-pinned', !pinned);
   if (!pinned) pane.classList.add('open');
+};
+
+function applyNavPin() {
+  const pinned = !!library.navPinned;
+  const pane = $('#nav-pane');
+  pane.dataset.pinned = pinned ? '1' : '0';
+  pane.classList.toggle('open', pinned);
+  $('#nav-pin').classList.toggle('pinned', pinned);
+  $('#nav-pin').setAttribute('aria-pressed', String(pinned));
+  $('#editor-view').classList.toggle('nav-pinned', pinned);
+}
+
+$('#nav-pin').onclick = async () => {
+  library.navPinned = !library.navPinned;
+  applyNavPin();
+  await window.neo.writeLibrary(library);
 };
 
 /* ================================================================== */
@@ -5175,7 +5208,7 @@ function buildHtml(data, opts = {}) {
       if (p.sceneBreak) return '<p class="brk">***</p>';
       if (p.poetry) return p.html;
       let html = p.html;
-      if (first) {
+      if (first && !ch.unnumbered) {
         const h = document.createElement('div');
         h.innerHTML = html;
         if (h.firstElementChild) {
@@ -5187,7 +5220,7 @@ function buildHtml(data, opts = {}) {
       return html;
     }).join('\n');
     return `
-    <section class="chapter">
+    <section class="chapter${ch.unnumbered ? ' unnumbered' : ''}">
       ${ch.heading ? `<h2>${escHtml(ch.heading)}</h2>` : ''}
       ${paras}
     </section>`;
@@ -5205,10 +5238,11 @@ function buildHtml(data, opts = {}) {
   .chapter { page-break-before: always; }
   .chapter h2 { text-align: center; letter-spacing: 4px; text-transform: uppercase; font-size: 12pt; font-weight: normal; color: #555; margin: 60px 0 40px; }
   .chapter p { text-indent: 2em; margin: 0; }
+  .chapter.unnumbered p { text-indent: 0; }
   .chapter h2 + p, .brk + p, .chapter p.first { text-indent: 0; }
   /* an in-flow raised initial: stays inside its word for copy, search,
      and screen readers, unlike a floated drop cap */
-  ${(library.fonts || {}).dropcap === 'none' ? '' : '.chapter h2 + p:not(.poetry)::first-letter, .chapter p.first::first-letter { font-size: 1.8em; line-height: 1; }'}
+  ${(library.fonts || {}).dropcap === 'none' ? '' : '.chapter:not(.unnumbered) h2 + p:not(.poetry)::first-letter, .chapter:not(.unnumbered) p.first::first-letter { font-size: 1.8em; line-height: 1; }'}
   .brk { text-align: center; text-indent: 0 !important; letter-spacing: 8px; color: #888; margin: 2.5em 0; }
   .chapter p.poetry { text-indent: 0; margin: 0 2.5em; }
   .chapter p:not(.poetry) + p.poetry, .chapter h2 + p.poetry { margin-top: 0.9em; }
@@ -5287,7 +5321,7 @@ function buildDocxEntries(data) {
       if (p.sceneBreak) body.push(docxP([{ text: '***' }], { align: 'center', spaceBefore: 240 }));
       else if (p.poetry) body.push(docxP(paraRuns(p.html), { align: p.align === 'center' || p.align === 'right' ? p.align : '', poetry: true }));
       else if (p.align === 'center' || p.align === 'right') body.push(docxP(paraRuns(p.html), { align: p.align }));
-      else body.push(docxP(paraRuns(p.html), { indent: true }));
+      else body.push(docxP(paraRuns(p.html), { indent: !ch.unnumbered }));
     }
   });
   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -5357,7 +5391,7 @@ function chapterXhtml(ch, d) {
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
 <head><title>${escXml(ch.heading || d.title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
-<body><section epub:type="${ch.matter || 'chapter'}">${ch.heading ? `<h1>${escXml(ch.heading)}</h1>` : ''}
+<body><section class="${ch.unnumbered ? 'unnumbered' : 'numbered'}" epub:type="${ch.matter || 'chapter'}">${ch.heading ? `<h1>${escXml(ch.heading)}</h1>` : ''}
 ${paras}
 </section></body></html>`;
 }
@@ -5443,6 +5477,7 @@ ${firstBody ? `<li><a epub:type="bodymatter" href="ch${firstBody.num}.xhtml">${e
     { path: 'OEBPS/style.css', content: `body { font-family: serif; line-height: 1.5; margin: 1em; }
 h1 { text-align: center; font-weight: normal; letter-spacing: 0.2em; text-transform: uppercase; font-size: 1.2em; margin: 3em 0 2em; }
 p { text-indent: 1.2em; margin: 0; }
+section.unnumbered p { text-indent: 0; }
 p.first, p.brk + p { text-indent: 0; }
 p.center { text-align: center; text-indent: 0; }
 p.right { text-align: right; text-indent: 0; }
@@ -5889,6 +5924,7 @@ installLinuxBodyFonts();
 /* ================================================================== */
 
 loadLibrary().then(() => {
+  applyNavPin();
   applyFonts();
   typewriterEnabled = !!library.typewriter;
   applyTypewriter();
