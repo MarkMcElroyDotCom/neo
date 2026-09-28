@@ -1109,24 +1109,48 @@ async function openBook(bookId) {
   }
 }
 
+// A page keeps its place in chapterOrder, but only numbered chapters advance
+// the visible chapter count. Older books have no pageTypes and remain unchanged.
+function isUnnumberedPage(chId) {
+  return !!(book.pageTypes && book.pageTypes[chId] === 'unnumbered');
+}
+
+function numberedChapterCount() {
+  return book.chapterOrder.filter((id) => !isUnnumberedPage(id)).length;
+}
+
+function chapterNumber(chId) {
+  if (isUnnumberedPage(chId)) return null;
+  return book.chapterOrder.slice(0, book.chapterOrder.indexOf(chId) + 1)
+    .filter((id) => !isUnnumberedPage(id)).length;
+}
+
+function pageLabel(chId) {
+  const title = (book.chapterTitles || {})[chId];
+  const n = chapterNumber(chId);
+  return n === null ? (title || t('Untitled page'))
+    : (title ? `${n} · ${title}` : t('Chapter {n}', { n }));
+}
+
 function renderChapters() {
   const wrap = $('#chapters');
   wrap.innerHTML = '';
   wordCache = {};
   book.chapterTitles = book.chapterTitles || {};
+  book.pageTypes = book.pageTypes || {};
   // a lone chapter is just "the story" — no heading until a second one exists,
   // at which point both appear, numbered in retrospect
-  const solo = book.chapterOrder.length === 1;
+  const solo = book.chapterOrder.length === 1 && !isUnnumberedPage(book.chapterOrder[0]);
   book.chapterOrder.forEach((chId, i) => {
     const sec = document.createElement('section');
-    sec.className = 'chapter sheet' + (solo ? ' solo' : '');
+    sec.className = 'chapter sheet' + (solo ? ' solo' : '') + (isUnnumberedPage(chId) ? ' unnumbered' : '');
     sec.dataset.id = chId;
     const head = document.createElement('div');
     head.className = 'chapter-head';
-    head.title = t('Right-click for chapter options · click after the number to add a title');
+    head.title = t('Right-click for page options · click to add a title');
     const num = document.createElement('span');
     num.className = 'ch-num';
-    num.textContent = t('Chapter {n}', { n: i + 1 });
+    num.textContent = isUnnumberedPage(chId) ? '' : t('Chapter {n}', { n: chapterNumber(chId) });
     const sep = document.createElement('span');
     sep.className = 'ch-sep';
     sep.textContent = '—';
@@ -1157,7 +1181,7 @@ function renderChapters() {
     head.appendChild(titleSpan);
     head.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      chapterMenu(chId, i);
+    chapterMenu(chId);
     });
     const body = document.createElement('div');
     body.className = 'chapter-body';
@@ -1192,7 +1216,6 @@ function renderChapters() {
 
 async function deleteChapterToDarlings(chId) {
   snapshotStructure('chapter delete');
-  const index = book.chapterOrder.indexOf(chId);
   const text = chapterText(chId).trim();
   if (text) {
     const bodyEl = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
@@ -1201,7 +1224,7 @@ async function deleteChapterToDarlings(chId) {
       html: bodyEl ? bodyEl.innerHTML : chapterHTML[chId],
       text: text.slice(0, 2000),
       chapterId: null,
-      chapterLabel: t('deleted Chapter {n}', { n: index + 1 }),
+      chapterLabel: isUnnumberedPage(chId) ? pageLabel(chId) : t('deleted Chapter {n}', { n: chapterNumber(chId) }),
       date: new Date().toISOString()
     });
     await window.neo.writeJSON(book.id, 'darlings', darlings);
@@ -1211,13 +1234,39 @@ async function deleteChapterToDarlings(chId) {
   if (text) toast(t('Chapter removed — its words are in Darlings, or {key} to undo', { key: KZ }));
 }
 
-async function chapterMenu(chId, index) {
+async function chapterMenu(chId) {
   const words = countWords(chapterText(chId));
+  const unnumbered = isUnnumberedPage(chId);
   const choice = await optionModal(
-    t('Chapter {n}', { n: index + 1 }),
+    unnumbered ? pageLabel(chId) : t('Chapter {n}', { n: chapterNumber(chId) }),
     words ? t('{n} words.', { n: words }) : t('This chapter is empty.'),
-    [{ label: t('Delete chapter'), desc: words ? t('Its words move to Darlings, recoverable anytime.') : t('Nothing to save — it just goes.'), danger: true, value: 'delete' }]
+    [
+      { label: unnumbered ? t('Make numbered chapter') : t('Make unnumbered page'),
+        desc: unnumbered ? t('Include this page in chapter numbering.') : t('Keep this page in order without a chapter number.'),
+        value: 'type' },
+      { label: t('Add unnumbered page before'), value: 'before' },
+      { label: t('Add unnumbered page after'), value: 'after' },
+      { label: t('Delete chapter'), desc: words ? t('Its words move to Darlings, recoverable anytime.') : t('Nothing to save — it just goes.'), danger: true, value: 'delete' }
+    ]
   );
+  if (choice === 'before' || choice === 'after') {
+    snapshotStructure('new unnumbered page');
+    const at = book.chapterOrder.indexOf(chId) + (choice === 'after' ? 1 : 0);
+    const newId = createChapterAt(at, true);
+    renderOutline();
+    const title = document.querySelector(`.chapter[data-id="${newId}"] .ch-title`);
+    if (title) title.focus();
+  }
+  if (choice === 'type') {
+    snapshotStructure('page type');
+    book.pageTypes = book.pageTypes || {};
+    if (unnumbered) delete book.pageTypes[chId];
+    else book.pageTypes[chId] = 'unnumbered';
+    saveMeta();
+    renderChapters();
+    renderOutline();
+    updateCounters();
+  }
   if (choice === 'delete') await deleteChapterToDarlings(chId);
 }
 
@@ -1390,6 +1439,11 @@ function chapterStartBackspace(e, body, chId) {
   const prevId = book.chapterOrder[idx - 1];
   const prevBody = document.querySelector(`.chapter[data-id="${prevId}"] .chapter-body`);
   if (!prevBody) return false;
+  if (prevBody.innerText.trim() && isUnnumberedPage(prevId) !== isUnnumberedPage(chId)) {
+    e.preventDefault();
+    toast(t('Convert the page type before merging these sections'));
+    return true;
+  }
   e.preventDefault();
   if (prevBody.innerText.trim() === '') {
     // empty chapter above: swallow it
@@ -1414,6 +1468,7 @@ function chapterStartBackspace(e, body, chId) {
     delete book.sectionNotes[chId];
   }
   if (book.chapterTitles) delete book.chapterTitles[chId];
+  if (book.pageTypes) delete book.pageTypes[chId];
   if (book.chapterNotes) delete book.chapterNotes[chId];
   book.chapterOrder = book.chapterOrder.filter((c) => c !== chId);
   delete chapterHTML[chId];
@@ -2253,9 +2308,13 @@ document.addEventListener('keydown', (e) => {
   window.neo.fullscreenToggle();
 });
 
-function createChapterAt(idx) {
+function createChapterAt(idx, unnumbered = false) {
   const chId = 'ch-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
   book.chapterOrder.splice(idx, 0, chId);
+  if (unnumbered) {
+    book.pageTypes = book.pageTypes || {};
+    book.pageTypes[chId] = 'unnumbered';
+  }
   chapterHTML[chId] = '<p><br></p>';
   persistChapter(chId);
   saveMeta();
@@ -2279,6 +2338,8 @@ async function deleteChapterQuiet(chId) {
   delete wordCache[chId];
   if (book.sectionNotes) delete book.sectionNotes[chId];
   if (book.chapterNotes) delete book.chapterNotes[chId];
+  if (book.chapterTitles) delete book.chapterTitles[chId];
+  if (book.pageTypes) delete book.pageTypes[chId];
   stickies = stickies.filter((s) => s.chapterId !== chId);
   window.neo.writeJSON(book.id, 'stickies', stickies);
   window.neo.deleteChapter(book.id, chId);
@@ -2390,7 +2451,7 @@ function renderStickies() {
     el.className = 'sticky unresolved';
     el.dataset.sid = s.id;
     el.innerHTML = `
-      <div class="s-ch">${chIdx >= 0 ? t('Chapter {n}', { n: chIdx + 1 }) : t('Unplaced')}</div>
+      <div class="s-ch">${chIdx >= 0 ? escHtml(pageLabel(s.chapterId)) : t('Unplaced')}</div>
       <textarea placeholder="${t('What needs doing here?')}" spellcheck="false"></textarea>
       <div class="s-actions"><button class="s-go">${t('Go to')}</button><span class="s-sep">·</span><button class="s-done">${t('Resolve')}</button></div>`;
     const ta = el.querySelector('textarea');
@@ -2507,9 +2568,9 @@ function renderNav() {
     item.dataset.id = chId;
     item.innerHTML = `<div class="n-row" title="${t('Drag to reorder chapters')}"><span class="n-label"></span>
       <span style="display:flex;align-items:center"><span class="n-words">${fmtNum(words)}</span>${flagged ? `<span class="n-flag" title="${t('Unresolved placeholder')}"></span>` : ''}</span></div>`;
-    item.querySelector('.n-label').textContent = book.chapterOrder.length === 1
+    item.querySelector('.n-label').textContent = book.chapterOrder.length === 1 && !isUnnumberedPage(chId)
       ? (book.title || t('The story'))
-      : (chTitle ? `${i + 1} · ${chTitle}` : t('Chapter {n}', { n: i + 1 }));
+      : pageLabel(chId);
 
     // the row is the drag handle, so the note below stays freely editable
     const rowEl = item.querySelector('.n-row');
@@ -2852,7 +2913,7 @@ async function moveSelectionToDarlings(html, text) {
     html: cleanHtml,
     text: text,
     chapterId: chId || null,
-    chapterLabel: chIdx >= 0 ? t('Chapter {n}', { n: chIdx + 1 }) : t('Manuscript'),
+    chapterLabel: chIdx >= 0 ? pageLabel(chId) : t('Manuscript'),
     anchorPrefix,
     anchorSuffix,
     date: new Date().toISOString()
@@ -2986,7 +3047,7 @@ function renderOutline(focusTarget) {
   wrap.innerHTML = '';
 
   book.chapterOrder.forEach((chId, i) => {
-    wrap.appendChild(outlineLine('chapter', chId, null, i, String(i + 1),
+    wrap.appendChild(outlineLine('chapter', chId, null, i, isUnnumberedPage(chId) ? '•' : String(chapterNumber(chId)),
       book.chapterNotes[chId] || ''));
     (book.sectionNotes[chId] || []).forEach((sec, j) => {
       wrap.appendChild(outlineLine('section', chId, sec.id, j, secLetter(j), sec.text));
@@ -3147,17 +3208,8 @@ function outlineLine(kind, chId, secId, index, label, text) {
   line.addEventListener('contextmenu', async (e) => {
     e.preventDefault();
     if (kind === 'chapter') {
-      const i = book.chapterOrder.indexOf(chId);
-      const words = countWords(chapterText(chId));
-      const choice = await optionModal(
-        t('Chapter {n}', { n: i + 1 }),
-        words ? t('{n} words.', { n: words }) : t('This chapter is empty.'),
-        [{ label: t('Delete chapter'), desc: words ? t('Its words move to Darlings, recoverable anytime.') : t('Nothing to save — it just goes.'), danger: true, value: 'delete' }]
-      );
-      if (choice === 'delete') {
-        await deleteChapterToDarlings(chId);
-        renderOutline();
-      }
+      await chapterMenu(chId);
+      if (!book.chapterOrder.includes(chId)) renderOutline();
     } else {
       const choice = await optionModal(t('Delete this section?'), null,
         [{ label: t('Delete section'), desc: t('Removes the outline line and its gray ghost from the manuscript. Written prose is never touched.'), danger: true, value: 'delete' }]);
@@ -3363,15 +3415,18 @@ function updateCounters() {
   } else {
     const n = currentChapterId ? chapterWords(currentChapterId) : 0;
     const idx = book.chapterOrder.indexOf(currentChapterId);
-    wc.textContent = t('ch. {ch}: {n} words', { ch: idx + 1, n });
+    wc.textContent = isUnnumberedPage(currentChapterId)
+      ? t('page: {n} words', { n })
+      : t('ch. {ch}: {n} words', { ch: chapterNumber(currentChapterId), n });
   }
   const pos = $('#pos-counter');
   const idx = book.chapterOrder.indexOf(currentChapterId);
   pos.textContent = book.chapterOrder.length <= 1
     ? '' // a chapterless story needs no chapter locator
     : (idx >= 0
-      ? t('chapter {ch} of {total}', { ch: idx + 1, total: book.chapterOrder.length })
-      : t('{n} chapters', { n: book.chapterOrder.length }));
+      ? (isUnnumberedPage(currentChapterId) ? pageLabel(currentChapterId)
+        : t('chapter {ch} of {total}', { ch: chapterNumber(currentChapterId), total: numberedChapterCount() }))
+      : t('{n} chapters', { n: numberedChapterCount() }));
   // cache for the bookshelf progress bar
   if (book.wordCount !== total) {
     // only a true crossing earns a painting — a story that was already long
@@ -3601,6 +3656,10 @@ async function refreshFromDisk() {
         book.chapterTitles = book.chapterTitles || {};
         const when = new Date().toLocaleTimeString(NeoI18n.getLocale(), { hour: 'numeric', minute: '2-digit' });
         book.chapterTitles[twinId] = ((book.chapterTitles[chId] || '') + ' ' + t('from other device, {time}', { time: when })).trim();
+        if (isUnnumberedPage(chId)) {
+          book.pageTypes = book.pageTypes || {};
+          book.pageTypes[twinId] = 'unnumbered';
+        }
         chapterHTML[twinId] = disk;
         persistChapter(twinId, disk);
         persistChapter(chId);
@@ -3744,6 +3803,7 @@ function snapshotStructure(label, opts) {
     rejoin: !!(opts && opts.rejoin),
     caret: captureCaret(),
     chapterOrder: [...book.chapterOrder],
+    pageTypes: { ...(book.pageTypes || {}) },
     chapterHTML: { ...chapterHTML },
     chapterTitles: { ...(book.chapterTitles || {}) },
     chapterNotes: { ...(book.chapterNotes || {}) },
@@ -3758,6 +3818,7 @@ async function structuralUndo() {
   const snap = undoStack.pop();
   if (!snap || !book) return;
   book.chapterOrder = snap.chapterOrder;
+  book.pageTypes = snap.pageTypes || {};
   chapterHTML = snap.chapterHTML;
   book.chapterTitles = snap.chapterTitles;
   book.chapterNotes = snap.chapterNotes;
@@ -5020,17 +5081,24 @@ function parasFromHtml(html) {
 
 function exportChapters() {
   // [{num, heading, paras: [{text, sceneBreak, html}]}]
+  const numbered = book.chapterOrder.map((id, i) => isUnnumberedPage(id) ? -1 : i).filter((i) => i >= 0);
+  const first = numbered[0] ?? Infinity;
+  const last = numbered[numbered.length - 1] ?? -1;
   return book.chapterOrder.map((chId, i) => {
     const el = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
     const paras = parasFromHtml(el ? el.innerHTML : (chapterHTML[chId] || ''));
     const chTitle = (book.chapterTitles || {})[chId];
     // chapterless stories export as continuous text
-    const heading = book.chapterOrder.length === 1
+    const heading = isUnnumberedPage(chId)
+      ? (chTitle || t('Untitled page'))
+      : book.chapterOrder.length === 1
       ? ''
       : library.exportCustomChapterTitles && chTitle
         ? chTitle
-        : t('Chapter {n}', { n: i + 1 }) + (chTitle ? ' — ' + chTitle : '');
-    return { num: i + 1, heading, paras };
+        : t('Chapter {n}', { n: chapterNumber(chId) }) + (chTitle ? ' — ' + chTitle : '');
+    const unnumbered = isUnnumberedPage(chId);
+    const matter = unnumbered ? (i < first ? 'frontmatter' : i > last ? 'backmatter' : 'bodymatter') : 'chapter';
+    return { num: i + 1, heading, paras, unnumbered, matter };
   });
 }
 
@@ -5289,7 +5357,7 @@ function chapterXhtml(ch, d) {
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
 <head><title>${escXml(ch.heading || d.title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
-<body><section epub:type="chapter">${ch.heading ? `<h1>${escXml(ch.heading)}</h1>` : ''}
+<body><section epub:type="${ch.matter || 'chapter'}">${ch.heading ? `<h1>${escXml(ch.heading)}</h1>` : ''}
 ${paras}
 </section></body></html>`;
 }
@@ -5297,6 +5365,7 @@ ${paras}
 async function buildEpubEntries(data) {
   const d = data || bookExportData();
   const chapters = d.sections;
+  const firstBody = chapters.find((ch) => !ch.unnumbered) || chapters[0];
   const uuid = 'urn:uuid:' + (d.uuid || crypto.randomUUID());
   const modified = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
 
@@ -5361,7 +5430,7 @@ ${navPoints}
 <nav epub:type="landmarks" hidden=""><ol>
 <li><a epub:type="cover" href="cover.xhtml">${escXml(t('Cover'))}</a></li>
 <li><a epub:type="toc" href="nav.xhtml">${escXml(t('Table of Contents'))}</a></li>
-<li><a epub:type="bodymatter" href="ch1.xhtml">${escXml(t('Beginning'))}</a></li>
+${firstBody ? `<li><a epub:type="bodymatter" href="ch${firstBody.num}.xhtml">${escXml(t('Beginning'))}</a></li>` : ''}
 </ol></nav>
 </body></html>` },
     { path: 'OEBPS/toc.ncx', content: `<?xml version="1.0" encoding="utf-8"?>
@@ -5419,16 +5488,22 @@ async function shelfExportData(shelf, anthologyTitle) {
     const meta = await window.neo.readBookMeta(bookId);
     if (!meta || !meta.chapterOrder) continue;
     const multi = meta.chapterOrder.length > 1;
+    let chapterNo = 0;
     for (let i = 0; i < meta.chapterOrder.length; i++) {
-      const html = await window.neo.readChapter(bookId, meta.chapterOrder[i]);
+      const chId = meta.chapterOrder[i];
+      const unnumbered = (meta.pageTypes || {})[chId] === 'unnumbered';
+      if (!unnumbered) chapterNo++;
+      const html = await window.neo.readChapter(bookId, chId);
       const paras = parasFromHtml(html);
       if (!paras.length) continue;
       num++;
-      const chTitle = (meta.chapterTitles || {})[meta.chapterOrder[i]];
+      const chTitle = (meta.chapterTitles || {})[chId];
       const heading = !multi
         ? meta.title
-        : (i === 0 ? meta.title : `${meta.title} — ${t('Chapter {n}', { n: i + 1 })}${chTitle ? ': ' + chTitle : ''}`);
-      sections.push({ num, heading, paras });
+        : unnumbered
+          ? `${meta.title} — ${chTitle || t('Untitled page')}`
+          : (i === 0 ? meta.title : `${meta.title} — ${t('Chapter {n}', { n: chapterNo })}${chTitle ? ': ' + chTitle : ''}`);
+      sections.push({ num, heading, paras, unnumbered });
     }
   }
   return {

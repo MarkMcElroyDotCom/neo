@@ -481,6 +481,8 @@ body.focus-mode:not(.no-dropcap) .chapter-body.focus-cap:not(.cap-off) p:not(.po
 }
 /* single-chapter works are chapterless: the heading waits for chapter two */
 .chapter.solo .chapter-head { display: none; }
+.chapter.unnumbered .ch-num, .chapter.unnumbered .ch-sep { display: none; }
+.chapter.unnumbered .ch-title:empty::before { content: 'page title'; opacity: 1; }
 .chapter-head .ch-sep { margin: 0 10px; opacity: 0; transition: opacity 0.15s; }
 .chapter-head:hover .ch-sep, .chapter-head.has-title .ch-sep { opacity: 0.6; }
 .chapter-head .ch-title {

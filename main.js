@@ -19,6 +19,15 @@ app.commandLine.appendSwitch('blink-settings', 'smartInsertDeleteEnabled=false')
 let LIBRARY_DIR = path.join(os.homedir(), 'Documents', 'NEO Library');
 let LIBRARY_FILE = path.join(LIBRARY_DIR, 'library.json');
 
+// Local development can point both the library and app settings at disposable
+// files, so test launches never touch a writer's installed NEO library.
+const TEST_LIBRARY_DIR = !app.isPackaged && process.env.NEO_TEST_LIBRARY_DIR;
+if (TEST_LIBRARY_DIR) {
+  const testUserData = path.join(TEST_LIBRARY_DIR, '.neo-user-data');
+  fs.mkdirSync(testUserData, { recursive: true });
+  app.setPath('userData', testUserData);
+}
+
 // NEO's few app-level settings (today: a custom library folder) live in the
 // system's per-app data folder, since they must exist before the library
 // is found. Everything about the writing stays in the library itself.
@@ -1578,6 +1587,7 @@ app.whenReady().then(() => {
       // …unless the writer chose their own folder (File → Library Folder…)
       const chosen = readSettings().libraryDir;
       if (chosen && fs.existsSync(chosen) && fs.statSync(chosen).isDirectory()) LIBRARY_DIR = chosen;
+      if (TEST_LIBRARY_DIR) LIBRARY_DIR = TEST_LIBRARY_DIR;
       LIBRARY_FILE = path.join(LIBRARY_DIR, 'library.json');
     } catch (err) {
       logError('paths', err);
