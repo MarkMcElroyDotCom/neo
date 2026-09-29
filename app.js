@@ -55,7 +55,7 @@ const tabName = (kind) => {
 // chapters. Chapters are numbered; parts are numbered on their own; the rest
 // go by their names. Prologues, epilogues and chapters are the story: they
 // count toward the words.
-const CHAPTER_KINDS = ['copyright', 'dedication', 'epigraph', 'contents', 'prologue', 'part', 'chapter', 'epilogue', 'acknowledgments', 'about'];
+const CHAPTER_KINDS = ['copyright', 'dedication', 'epigraph', 'contents', 'prologue', 'part', 'chapter', 'flex', 'epilogue', 'acknowledgments', 'about'];
 const STORY_KINDS = ['chapter', 'prologue', 'epilogue'];
 // what comes after the story, where a new chapter never goes
 const BACK_KINDS = ['epilogue', 'acknowledgments', 'about'];
@@ -91,11 +91,13 @@ function chapterName(chId, meta = book) {
   const k = chapterKind(chId, meta);
   if (k === 'chapter') return t('Chapter {n}', { n: chapterNumber(chId, meta) });
   if (k === 'part') return partLabel(kindCount(chId, 'part', meta));
+  if (k === 'flex') return ((meta.chapterTitles || {})[chId] || '').trim() || t('FlexPage');
   return kindName(k);
 }
 function kindName(kind) {
   if (kind === 'chapter') return t('Chapter');
   if (kind === 'contents') return t('Contents');
+  if (kind === 'flex') return t('FlexPage');
   return pageKindName(kind);
 }
 // where there's only room for a number: a chapter's, a part's in roman
@@ -2171,7 +2173,24 @@ function renderChapters() {
     head.id = 'ch-head-' + chId;
     const num = document.createElement('span');
     num.className = 'ch-num';
-    num.textContent = chapterName(chId);
+    num.textContent = kind === 'flex' ? ((book.chapterTitles || {})[chId] || '') : chapterName(chId);
+    if (kind === 'flex') {
+      num.classList.add('flex-title');
+      num.contentEditable = 'true';
+      num.spellcheck = false;
+      num.setAttribute('aria-label', t('FlexPage title'));
+      num.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); num.blur(); }
+        e.stopPropagation();
+      });
+      num.addEventListener('blur', () => {
+        book.chapterTitles[chId] = num.textContent.trim();
+        scheduleMetaSave();
+        renderNav();
+        renderContentsLists();
+        updateCounters();
+      });
+    }
     head.appendChild(num);
     if (story) {
       head.title = t('Right-click for chapter options · click after the number to add a title');
@@ -2329,6 +2348,7 @@ async function chapterMenu(chId, x = 0, y = 0, from = null) {
   }
   await saveMeta();
   renderChapters();
+  if (choice === 'flex') focusFlexTitle(chId);
   if (currentTab === 'outline') renderOutline();
   updateCounters();
   return choice;
@@ -3794,7 +3814,7 @@ function renderNav() {
     item.dataset.id = chId;
     item.innerHTML = `<div class="n-row" title="${t('Drag to reorder chapters')}"><span class="n-label"></span>
       <span style="display:flex;align-items:center">${story ? `<span class="n-words">${fmtNum(words)}</span>` : ''}${flagged ? `<span class="n-flag" title="${t('Unresolved placeholder')}"></span>` : ''}</span></div>`;
-    item.querySelector('.n-label').textContent = chId === solo
+    item.querySelector('.n-label').textContent = kind === 'flex' ? chapterName(chId) : chId === solo
       ? (book.title || t('The story'))
       : (chTitle ? `${chapterMark(chId)} · ${chTitle}` : chapterName(chId));
 
@@ -3892,11 +3912,23 @@ function addEntry(at, kind) {
   saveMeta();
   renderChapters();
   // the new page is ready to write on (the contents, to look at)
-  if (kind === 'copyright') focusChapter(chId); else focusChapterStart(chId);
+  if (kind === 'flex') focusFlexTitle(chId);
+  else if (kind === 'copyright') focusChapter(chId);
+  else focusChapterStart(chId);
   document.querySelector(`.chapter[data-id="${chId}"]`).scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
   updateCounters();
   if (currentTab === 'outline') renderOutline();
   return chId;
+}
+function focusFlexTitle(chId) {
+  const title = document.querySelector(`.chapter[data-id="${chId}"] .flex-title`);
+  if (!title) return;
+  title.focus();
+  const range = document.createRange();
+  range.selectNodeContents(title);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 const newEntryId = () => 'ch-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
 
@@ -6709,8 +6741,8 @@ function parasFromHtml(html) {
 // set them, and one left blank stays out. `toc` is the table of contents.
 // The Contents entry, when the book has one, is where a printed contents
 // page goes: what comes before it is the front of the book. Without one,
-// the front is the copyright, dedication and epigraph that open the book.
-const FRONT_PAGES = ['copyright', 'dedication', 'epigraph'];
+// the front is the opening copyright, dedication, epigraph and FlexPages.
+const FRONT_PAGES = ['copyright', 'dedication', 'epigraph', 'flex'];
 function exportChapters() {
   const solo = soloStory();
   const sections = [];
@@ -6725,13 +6757,19 @@ function exportChapters() {
     if (kind === 'contents') { if (contentsAt < 0) contentsAt = sections.length; continue; }
     const el = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
     const paras = parasFromHtml(el ? el.innerHTML : (chapterHTML[chId] || ''));
-    if (FRONT_PAGES.includes(kind)) {
+    if (FRONT_PAGES.includes(kind) && kind !== 'flex') {
       if (paras.length) push({ kind, heading: '', label: kindName(kind), level: 0, paras });
       continue;
     }
     if (kind === 'acknowledgments' || kind === 'about') {
       if (!paras.length) continue;
       const sec = push({ kind, heading: kindName(kind), level: 0, paras });
+      toc.push({ label: sec.heading, num: sec.num, level: 0, type: 'page' });
+      continue;
+    }
+    if (kind === 'flex') {
+      if (!paras.length && !((book.chapterTitles || {})[chId] || '').trim()) continue;
+      const sec = push({ kind, heading: chapterName(chId), level: 0, paras });
       toc.push({ label: sec.heading, num: sec.num, level: 0, type: 'page' });
       continue;
     }
@@ -6930,11 +6968,12 @@ function buildHtml(data, opts = {}) {
     </section>`;
     }
     const back = kind === 'acknowledgments' || kind === 'about';
+    const flex = kind === 'flex';
     return `
-    <section class="chapter${back ? ' backpage' : ''}" id="${id}">
+    <section class="chapter${back ? ' backpage' : ''}${flex ? ' flexpage' : ''}" id="${id}">
       ${ch.heading ? `<${h} class="hd">${escHtml(ch.heading)}</${h}>` : ''}
       ${ch.byline ? `<p class="byline">${escHtml(ch.byline)}</p>` : ''}
-      ${prose(ch.paras, !back)}
+      ${prose(ch.paras, !back && !flex)}
     </section>`;
   };
   // Contents: the parts, the titles and the pages at the back. The page
@@ -6971,6 +7010,7 @@ function buildHtml(data, opts = {}) {
      read "Chapter 3", not "CHAPTER 3" */
   .chapter .hd, .contents .hd { text-align: center; letter-spacing: 4px; font-variant-caps: all-small-caps; font-variant-numeric: oldstyle-nums; font-size: 17pt; font-weight: normal; color: #555; margin: 54px 0 36px; }
   .chapter p { text-indent: 2em; margin: 0; }
+  .chapter.flexpage p { text-indent: 0; }
   .chapter .hd + p, .chapter .byline + p, .brk + p, .chapter p.first { text-indent: 0; }
   /* an in-flow raised initial: stays inside its word for copy, search,
      and screen readers, unlike a floated drop cap */
@@ -7150,7 +7190,7 @@ function buildDocxEntries(data) {
       if (p.sceneBreak) body.push(docxP([{ text: '***' }], { align: 'center', spaceBefore: 240 }));
       else if (p.poetry) body.push(docxP(paraRuns(p.html), { align: p.align === 'center' || p.align === 'right' ? p.align : '', poetry: true }));
       else if (p.align === 'center' || p.align === 'right') body.push(docxP(paraRuns(p.html), { align: p.align }));
-      else body.push(docxP(paraRuns(p.html), { indent: true }));
+      else body.push(docxP(paraRuns(p.html), { indent: kind !== 'flex' }));
     }
   });
   if (!placed) contents();
@@ -7242,13 +7282,13 @@ ${ch.subtitle ? `<p class="sub">${escXml(ch.subtitle)}</p>` : ''}${ch.byline ? `
       if (p.sceneBreak) { first = true; return '<p class="brk">* * *</p>'; }
       const classes = [];
       if (p.poetry) classes.push('poetry');
-      else if (first) classes.push('first');
+      else if (first && kind !== 'flex') classes.push('first');
       if (p.align === 'center' || p.align === 'right') classes.push(p.align);
       const cls = classes.length ? ` class="${classes.join(' ')}"` : '';
       if (!p.poetry) first = false;
       return `<p${cls}>${xhtmlRuns(p)}</p>`;
     }).join('\n');
-    inner = `<section epub:type="${EPUB_TYPES[kind] || ch.role || 'chapter'}">${ch.heading ? `<h1>${escXml(ch.heading)}</h1>` : ''}${ch.byline ? `<p class="byline">${escXml(ch.byline)}</p>` : ''}
+    inner = `<section${kind === 'flex' ? ' class="flexpage"' : ` epub:type="${EPUB_TYPES[kind] || ch.role || 'chapter'}"`}>${ch.heading ? `<h1>${escXml(ch.heading)}</h1>` : ''}${ch.byline ? `<p class="byline">${escXml(ch.byline)}</p>` : ''}
 ${paras}
 </section>`;
   }
@@ -7354,6 +7394,7 @@ ${navList(toc)}
     { path: 'OEBPS/style.css', content: `body { font-family: serif; line-height: 1.5; margin: 1em; }
 h1 { text-align: center; font-weight: normal; letter-spacing: 0.2em; text-transform: uppercase; font-size: 1.2em; margin: 3em 0 2em; }
 p { text-indent: 1.2em; margin: 0; }
+.flexpage p { text-indent: 0; }
 p.first, p.brk + p, p.byline + p { text-indent: 0; }
 p.center { text-align: center; text-indent: 0; }
 p.right { text-align: right; text-indent: 0; }

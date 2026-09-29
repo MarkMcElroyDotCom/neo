@@ -6,6 +6,8 @@ const { app, BrowserWindow, ipcMain, dialog, Menu, MenuItem, utilityProcess, scr
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const CUSTOM_FLEXPAGE_BUILD = true;
+if (process.env && process.env.NEO_TEST_USER_DATA_DIR) app.setPath('userData', process.env.NEO_TEST_USER_DATA_DIR);
 
 // macOS Chromium's "smart delete" also removes whitespace around a deleted
 // selection, and that pass can duplicate characters. Deletes stay literal.
@@ -1673,7 +1675,8 @@ ipcMain.handle('app:version', () => app.getVersion());
 let updater = null;          // electron-updater's autoUpdater, wired once
 let updaterReady = false;    // an update is downloaded and waiting
 function getUpdater() {
-  if (updater || !app.isPackaged) return updater;
+  // Custom builds can check Hugh's releases, but must not install over local changes.
+  if (updater || !app.isPackaged || CUSTOM_FLEXPAGE_BUILD) return updater;
   const { autoUpdater } = require('electron-updater');
   autoUpdater.logger = null;
   autoUpdater.autoDownload = false;      // the writer says when
@@ -1816,6 +1819,7 @@ app.whenReady().then(() => {
       // …unless the writer chose their own folder (File → Library Folder…)
       const chosen = readSettings().libraryDir;
       if (chosen && fs.existsSync(chosen) && fs.statSync(chosen).isDirectory()) LIBRARY_DIR = chosen;
+      if (process.env.NEO_TEST_LIBRARY_DIR) LIBRARY_DIR = process.env.NEO_TEST_LIBRARY_DIR;
       LIBRARY_FILE = path.join(LIBRARY_DIR, 'library.json');
     } catch (err) {
       logError('paths', err);
